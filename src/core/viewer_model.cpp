@@ -31,7 +31,7 @@ const Camera2D *ViewerModel::camera() const
     return &camera_;
 }
 
-QVector<ImageLayer *> ViewerModel::layers() const
+QVector<Layer *> ViewerModel::layers() const
 {
     return layers_;
 }
@@ -41,7 +41,7 @@ int ViewerModel::layerCount() const
     return layers_.size();
 }
 
-ImageLayer *ViewerModel::layerAt(const int index) const
+Layer *ViewerModel::layerAt(const int index) const
 {
     if (index < 0 || index >= layers_.size()) {
         return nullptr;
@@ -54,9 +54,19 @@ int ViewerModel::activeLayerIndex() const
     return activeLayerIndex_;
 }
 
-ImageLayer *ViewerModel::activeLayer() const
+Layer *ViewerModel::activeLayer() const
 {
     return layerAt(activeLayerIndex_);
+}
+
+ImageLayer *ViewerModel::activeImageLayer() const
+{
+    return qobject_cast<ImageLayer *>(activeLayer());
+}
+
+LabelsLayer *ViewerModel::activeLabelsLayer() const
+{
+    return qobject_cast<LabelsLayer *>(activeLayer());
 }
 
 QString ViewerModel::statusText() const
@@ -64,14 +74,14 @@ QString ViewerModel::statusText() const
     return statusText_;
 }
 
-ImageLayer *ViewerModel::addLayer(std::unique_ptr<ImageLayer> layer)
+Layer *ViewerModel::addLayer(std::unique_ptr<Layer> layer)
 {
     if (!layer) {
         return nullptr;
     }
 
     layer->setParent(this);
-    ImageLayer *rawLayer = layer.release();
+    Layer *rawLayer = layer.release();
     layers_.append(rawLayer);
     connectLayer(rawLayer);
     setActiveLayerIndex(layers_.size() - 1);
@@ -82,11 +92,33 @@ ImageLayer *ViewerModel::addLayer(std::unique_ptr<ImageLayer> layer)
     return rawLayer;
 }
 
-void ViewerModel::addLayers(std::vector<std::unique_ptr<ImageLayer>> layers)
+void ViewerModel::addLayers(std::vector<std::unique_ptr<Layer>> layers)
 {
     for (auto &layer : layers) {
         addLayer(std::move(layer));
     }
+}
+
+ImageLayer *ViewerModel::addImage(NdImage image, QString name)
+{
+    return qobject_cast<ImageLayer *>(addLayer(std::make_unique<ImageLayer>(std::move(image), std::move(name))));
+}
+
+LabelsLayer *ViewerModel::addLabels(NdImage image, QString name)
+{
+    return qobject_cast<LabelsLayer *>(addLayer(std::make_unique<LabelsLayer>(std::move(image), std::move(name))));
+}
+
+LabelsLayer *ViewerModel::newLabels()
+{
+    QSize size(512, 512);
+    if (activeImageLayer() != nullptr) {
+        size = activeImageLayer()->planeSize();
+    } else if (ImageLayer *firstImage = firstImageLayer(); firstImage != nullptr) {
+        size = firstImage->planeSize();
+    }
+
+    return addLabels(NdImage::zeros({size.height(), size.width()}, DataType::UInt16, QStringLiteral("Labels")));
 }
 
 void ViewerModel::removeActiveLayer()
@@ -100,7 +132,7 @@ void ViewerModel::removeLayer(const int index)
         return;
     }
 
-    ImageLayer *layer = layers_.takeAt(index);
+    Layer *layer = layers_.takeAt(index);
     if (activeLayerIndex_ >= layers_.size()) {
         activeLayerIndex_ = layers_.isEmpty() ? -1 : layers_.size() - 1;
     } else if (index <= activeLayerIndex_) {
@@ -155,10 +187,11 @@ void ViewerModel::fitToActiveOrVisible(const QSize &canvasSize)
     }
 }
 
-void ViewerModel::connectLayer(ImageLayer *layer)
+void ViewerModel::connectLayer(Layer *layer)
 {
-    connect(layer, &ImageLayer::changed, this, [this]() {
+    connect(layer, &Layer::changed, this, [this, layer]() {
         updateStatusText();
+        emit layerDataChanged(layers_.indexOf(layer));
         emit repaintRequested();
     });
 }
@@ -173,7 +206,29 @@ void ViewerModel::updateStatusText()
     QStringList bits;
     bits << QStringLiteral("%1 layer%2").arg(layers_.size()).arg(layers_.size() == 1 ? QString() : QStringLiteral("s"));
     if (activeLayer() != nullptr) {
-        bits << QStringLiteral("active: %1").arg(activeLayer()->name());
+        bits << QStringLiteral("active: %1 (%2)").arg(activeLayer()->name(), activeLayer()->kindName());
+        if (LabelsLayer *labelsLayer = activeLabelsLayer(); labelsLayer != nullptr) {
+            QString modeName = QStringLiteral("pan_zoom");
+            switch (labelsLayer->mode()) {
+            case LabelsLayer::Mode::PanZoom:
+                modeName = QStringLiteral("pan_zoom");
+                break;
+            case LabelsLayer::Mode::Paint:
+                modeName = QStringLiteral("paint");
+                break;
+            case LabelsLayer::Mode::Erase:
+                modeName = QStringLiteral("erase");
+                break;
+            case LabelsLayer::Mode::Fill:
+                modeName = QStringLiteral("fill");
+                break;
+            case LabelsLayer::Mode::Pick:
+                modeName = QStringLiteral("pick");
+                break;
+            }
+            bits << QStringLiteral("mode: %1").arg(modeName);
+            bits << QStringLiteral("label=%1").arg(labelsLayer->selectedLabel());
+        }
     }
     if (dims_.ndim() > 2) {
         QStringList positions;
@@ -190,13 +245,13 @@ void ViewerModel::updateStatusText()
 QVector<int> ViewerModel::combinedShape() const
 {
     int maxNdim = 0;
-    for (const ImageLayer *layer : layers_) {
-        maxNdim = qMax(maxNdim, layer->image().ndim());
+    for (const Layer *layer : layers_) {
+        maxNdim = qMax(maxNdim, layer->shape().size());
     }
 
     QVector<int> shape(maxNdim, 1);
-    for (const ImageLayer *layer : layers_) {
-        const QVector<int> layerShape = layer->image().shape();
+    for (const Layer *layer : layers_) {
+        const QVector<int> layerShape = layer->shape();
         const int offset = maxNdim - layerShape.size();
         for (int axis = 0; axis < layerShape.size(); ++axis) {
             shape[offset + axis] = qMax(shape.at(offset + axis), layerShape.at(axis));
@@ -208,16 +263,27 @@ QVector<int> ViewerModel::combinedShape() const
 QSize ViewerModel::activeOrVisiblePlaneSize() const
 {
     if (activeLayer() != nullptr) {
-        return activeLayer()->image().planeSize();
+        return activeLayer()->planeSize();
     }
 
     for (auto it = layers_.crbegin(); it != layers_.crend(); ++it) {
         if ((*it)->visible()) {
-            return (*it)->image().planeSize();
+            return (*it)->planeSize();
         }
     }
 
     return {};
+}
+
+ImageLayer *ViewerModel::firstImageLayer() const
+{
+    for (Layer *layer : layers_) {
+        if (auto *imageLayer = qobject_cast<ImageLayer *>(layer); imageLayer != nullptr) {
+            return imageLayer;
+        }
+    }
+
+    return nullptr;
 }
 
 }  // namespace napari_cpp

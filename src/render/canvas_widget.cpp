@@ -5,6 +5,7 @@
 #include <QTimer>
 #include <QWheelEvent>
 
+#include "core/labels_layer.h"
 #include "core/slice_extractor.h"
 #include "core/viewer_model.h"
 
@@ -115,7 +116,7 @@ void CanvasWidget::paintGL()
     }
 
     ensureShaderProgram();
-    for (ImageLayer *layer : viewer_->layers()) {
+    for (Layer *layer : viewer_->layers()) {
         if (!layer->visible()) {
             continue;
         }
@@ -130,6 +131,13 @@ void CanvasWidget::paintGL()
 void CanvasWidget::mousePressEvent(QMouseEvent *event)
 {
     if (event->button() == Qt::LeftButton) {
+        if (applyLabelsInteractionAt(event->position(), false)) {
+            editingLabels_ = viewer_->activeLabelsLayer() != nullptr
+                             && (viewer_->activeLabelsLayer()->mode() == LabelsLayer::Mode::Paint
+                                 || viewer_->activeLabelsLayer()->mode() == LabelsLayer::Mode::Erase);
+            event->accept();
+            return;
+        }
         dragging_ = true;
         lastDragPosition_ = event->pos();
     }
@@ -138,6 +146,12 @@ void CanvasWidget::mousePressEvent(QMouseEvent *event)
 
 void CanvasWidget::mouseMoveEvent(QMouseEvent *event)
 {
+    if (editingLabels_) {
+        applyLabelsInteractionAt(event->position(), true);
+        event->accept();
+        return;
+    }
+
     if (dragging_) {
         const QPoint delta = event->pos() - lastDragPosition_;
         lastDragPosition_ = event->pos();
@@ -151,6 +165,7 @@ void CanvasWidget::mouseReleaseEvent(QMouseEvent *event)
 {
     if (event->button() == Qt::LeftButton) {
         dragging_ = false;
+        editingLabels_ = false;
     }
     QOpenGLWidget::mouseReleaseEvent(event);
 }
@@ -222,6 +237,40 @@ void CanvasWidget::drawLayerTexture(const QImage &image, const double opacity)
     program_.disableAttributeArray("a_texCoord");
     texture.release();
     program_.release();
+}
+
+bool CanvasWidget::applyLabelsInteractionAt(const QPointF &screenPosition, const bool dragging)
+{
+    LabelsLayer *layer = viewer_->activeLabelsLayer();
+    if (layer == nullptr || !layer->visible()) {
+        return false;
+    }
+
+    if (layer->mode() == LabelsLayer::Mode::PanZoom) {
+        return false;
+    }
+
+    if (dragging && layer->mode() != LabelsLayer::Mode::Paint && layer->mode() != LabelsLayer::Mode::Erase) {
+        return false;
+    }
+
+    const QPointF imagePosition = viewer_->camera()->screenToImage(screenPosition, size());
+    const QPoint imagePoint(qFloor(imagePosition.x()), qFloor(imagePosition.y()));
+
+    switch (layer->mode()) {
+    case LabelsLayer::Mode::PanZoom:
+        return false;
+    case LabelsLayer::Mode::Paint:
+        return layer->paint(imagePoint, *viewer_->dimsModel());
+    case LabelsLayer::Mode::Erase:
+        return layer->erase(imagePoint, *viewer_->dimsModel());
+    case LabelsLayer::Mode::Fill:
+        return layer->fill(imagePoint, *viewer_->dimsModel());
+    case LabelsLayer::Mode::Pick:
+        return layer->pickAndSetLabel(imagePoint, *viewer_->dimsModel());
+    }
+
+    return false;
 }
 
 }  // namespace napari_cpp

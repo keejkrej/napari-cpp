@@ -58,4 +58,16 @@ void Layer::setOpacity(const double opacity)
     emit changed();
 }
 
+QString Layer::kindName() const
+{
+    switch (kind()) {
+    case Kind::Image:
+        return QStringLiteral("Image");
+    case Kind::Labels:
+        return QStringLiteral("Labels");
+    }
+
+    return QStringLiteral("Layer");
+}
+
 }  // namespace napari_cpp

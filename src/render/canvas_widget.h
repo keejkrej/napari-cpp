@@ -36,10 +36,12 @@ private:
     void ensureShaderProgram();
     void drawLayerTexture(const QImage &image, double opacity);
     void applyPendingAutoFit();
+    bool applyLabelsInteractionAt(const QPointF &screenPosition, bool dragging);
 
     ViewerModel *viewer_ = nullptr;
     QOpenGLShaderProgram program_;
     bool dragging_ = false;
+    bool editingLabels_ = false;
     QPoint lastDragPosition_;
     bool autoFitPending_ = false;
 };

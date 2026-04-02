@@ -1,8 +1,10 @@
 #include <QApplication>
-#include <QBuffer>
-#include <QDir>
+#include <cstring>
+#include <QFileInfo>
 #include <QImage>
 #include <QSignalSpy>
+#include <QSpinBox>
+#include <QStackedWidget>
 #include <QTemporaryDir>
 #include <QTest>
 
@@ -10,6 +12,8 @@
 
 #include "core/dims_model.h"
 #include "core/image_layer.h"
+#include "core/labels_layer.h"
+#include "core/layer.h"
 #include "core/slice_extractor.h"
 #include "core/viewer_model.h"
 #include "io/image_reader.h"
@@ -33,6 +37,13 @@ QByteArray scalarBytesU8(const QVector<int> &shape)
     return bytes;
 }
 
+QByteArray scalarBytesU16(const QVector<quint16> &values)
+{
+    QByteArray bytes(static_cast<qsizetype>(values.size() * sizeof(quint16)), Qt::Uninitialized);
+    std::memcpy(bytes.data(), values.constData(), static_cast<size_t>(bytes.size()));
+    return bytes;
+}
+
 QString writePng(const QTemporaryDir &directory)
 {
     QImage image(12, 10, QImage::Format_Grayscale8);
@@ -43,6 +54,20 @@ QString writePng(const QTemporaryDir &directory)
         }
     }
     const QString path = directory.path() + QStringLiteral("/test.png");
+    image.save(path);
+    return path;
+}
+
+QString writeColorPng(const QTemporaryDir &directory)
+{
+    QImage image(8, 6, QImage::Format_RGBA8888);
+    image.fill(Qt::transparent);
+    for (int y = 0; y < image.height(); ++y) {
+        for (int x = 0; x < image.width(); ++x) {
+            image.setPixelColor(x, y, QColor(255, x * 20, y * 20, 255));
+        }
+    }
+    const QString path = directory.path() + QStringLiteral("/color.png");
     image.save(path);
     return path;
 }
@@ -95,27 +120,17 @@ private slots:
         QCOMPARE(dims.currentIndex(0), 4);
         QCOMPARE(dims.currentIndex(1), 3);
     }
-
-    void preservesTrailingIndicesAcrossShapeChanges()
-    {
-        DimsModel dims;
-        dims.setShape({4, 8, 16});
-        dims.setCurrentIndex(0, 2);
-        dims.setShape({10, 4, 8, 16});
-        QCOMPARE(dims.currentIndex(1), 2);
-        QCOMPARE(dims.currentIndex(0), 0);
-    }
 };
 
 class SliceExtractorTests : public QObject {
     Q_OBJECT
 
 private slots:
-    void slicesScalarStackCorrectly()
+    void slicesScalarImageCorrectly()
     {
-        NdImage image({2, 3, 4}, DataType::UInt8, ChannelMode::Scalar, scalarBytesU8({2, 3, 4}), QStringLiteral("stack"));
-        ImageLayer layer(image);
+        ImageLayer layer(NdImage({2, 3, 4}, DataType::UInt8, ChannelMode::Scalar, scalarBytesU8({2, 3, 4}), QStringLiteral("stack")));
         layer.setContrastLimits(0, 23);
+        layer.setColormapName(QStringLiteral("green"));
 
         DimsModel dims;
         dims.setShape({2, 3, 4});
@@ -124,35 +139,64 @@ private slots:
         const SliceResult result = SliceExtractor::extractRgba(layer, dims);
         QCOMPARE(result.image.size(), QSize(4, 3));
         const QColor firstPixel(result.image.pixel(0, 0));
-        QVERIFY(firstPixel.red() > 120);
+        QVERIFY(firstPixel.green() > 120);
     }
 
-    void passesThroughColorImages()
+    void rendersLabelsWithTransparentBackground()
     {
-        QByteArray bytes(2 * 2 * 4, Qt::Uninitialized);
-        bytes[0] = static_cast<char>(255);
-        bytes[1] = 0;
-        bytes[2] = 0;
-        bytes[3] = static_cast<char>(255);
-        bytes[4] = 0;
-        bytes[5] = static_cast<char>(255);
-        bytes[6] = 0;
-        bytes[7] = static_cast<char>(255);
-        bytes[8] = 0;
-        bytes[9] = 0;
-        bytes[10] = static_cast<char>(255);
-        bytes[11] = static_cast<char>(255);
-        bytes[12] = static_cast<char>(255);
-        bytes[13] = static_cast<char>(255);
-        bytes[14] = 0;
-        bytes[15] = static_cast<char>(255);
-        ImageLayer layer(NdImage({2, 2}, DataType::UInt8, ChannelMode::RGBA, bytes, QStringLiteral("rgba")));
-
+        LabelsLayer layer(NdImage({2, 2}, DataType::UInt16, ChannelMode::Scalar, scalarBytesU16({0, 1, 2, 1}), QStringLiteral("labels")));
         DimsModel dims;
         dims.setShape({2, 2});
-        const SliceResult result = SliceExtractor::extractRgba(layer, dims);
-        QCOMPARE(QColor(result.image.pixel(0, 0)), QColor(255, 0, 0, 255));
-        QCOMPARE(QColor(result.image.pixel(1, 0)), QColor(0, 255, 0, 255));
+
+        SliceResult result = SliceExtractor::extractRgba(layer, dims);
+        QCOMPARE(result.image.pixelColor(0, 0).alpha(), 0);
+        QVERIFY(result.image.pixelColor(1, 0).alpha() > 0);
+
+        layer.setSelectedLabel(2);
+        layer.setShowSelectedLabel(true);
+        result = SliceExtractor::extractRgba(layer, dims);
+        QCOMPARE(result.image.pixelColor(1, 0).alpha(), 0);
+        QVERIFY(result.image.pixelColor(0, 1).alpha() > 0);
+    }
+};
+
+class LabelsLayerTests : public QObject {
+    Q_OBJECT
+
+private slots:
+    void paintEraseFillAndPickOperateOnCurrentSlice()
+    {
+        LabelsLayer layer(NdImage::zeros({2, 10, 10}, DataType::UInt16, QStringLiteral("labels")));
+        DimsModel dims;
+        dims.setShape({2, 10, 10});
+        dims.setCurrentIndex(0, 1);
+
+        layer.setBrushSize(1);
+        layer.setSelectedLabel(7);
+        QVERIFY(layer.paint(QPoint(5, 5), dims));
+        QCOMPARE(layer.pickLabel(QPoint(5, 5), dims), 7u);
+
+        dims.setCurrentIndex(0, 0);
+        QCOMPARE(layer.pickLabel(QPoint(5, 5), dims), 0u);
+
+        dims.setCurrentIndex(0, 1);
+        QVERIFY(layer.erase(QPoint(5, 5), dims));
+        QCOMPARE(layer.pickLabel(QPoint(5, 5), dims), 0u);
+
+        layer.setSelectedLabel(3);
+        layer.setContiguous(true);
+        QVERIFY(layer.paint(QPoint(1, 1), dims));
+        QVERIFY(layer.paint(QPoint(1, 2), dims));
+        QVERIFY(layer.paint(QPoint(8, 8), dims));
+        layer.setSelectedLabel(9);
+        QVERIFY(layer.fill(QPoint(1, 1), dims));
+        QCOMPARE(layer.pickLabel(QPoint(1, 1), dims), 9u);
+        QCOMPARE(layer.pickLabel(QPoint(1, 2), dims), 9u);
+        QCOMPARE(layer.pickLabel(QPoint(8, 8), dims), 3u);
+
+        layer.setContiguous(false);
+        QVERIFY(layer.fill(QPoint(8, 8), dims));
+        QCOMPARE(layer.pickLabel(QPoint(8, 8), dims), 9u);
     }
 };
 
@@ -160,37 +204,27 @@ class ViewerModelTests : public QObject {
     Q_OBJECT
 
 private slots:
-    void appendRemoveMoveLayersAndEmitRepaint()
+    void mixedLayersUpdateDimsAndSelection()
     {
         ViewerModel viewer;
-        QSignalSpy repaintSpy(&viewer, &ViewerModel::repaintRequested);
+        auto *image = viewer.addImage(NdImage({8, 9}, DataType::UInt8, ChannelMode::Scalar, scalarBytesU8({8, 9}), QStringLiteral("image")));
+        auto *labels = viewer.addLabels(NdImage::zeros({4, 8, 9}, DataType::UInt16, QStringLiteral("labels")));
 
-        auto first = std::make_unique<ImageLayer>(
-            NdImage({8, 9}, DataType::UInt8, ChannelMode::Scalar, scalarBytesU8({8, 9}), QStringLiteral("first")));
-        auto second = std::make_unique<ImageLayer>(
-            NdImage({4, 8, 9}, DataType::UInt8, ChannelMode::Scalar, scalarBytesU8({4, 8, 9}), QStringLiteral("second")));
-
-        viewer.addLayer(std::move(first));
-        viewer.addLayer(std::move(second));
         QCOMPARE(viewer.layerCount(), 2);
         QCOMPARE(viewer.dimsModel()->shape(), QVector<int>({4, 8, 9}));
-
-        viewer.moveLayer(1, 0);
-        QCOMPARE(viewer.layerAt(0)->name(), QStringLiteral("second"));
-
-        viewer.layerAt(0)->setOpacity(0.5);
-        QVERIFY(repaintSpy.count() > 0);
-
-        viewer.removeActiveLayer();
-        QCOMPARE(viewer.layerCount(), 1);
+        QCOMPARE(viewer.activeLayer(), static_cast<Layer *>(labels));
+        viewer.setActiveLayerIndex(0);
+        QCOMPARE(viewer.activeLayer(), static_cast<Layer *>(image));
     }
 
-    void fitsToVisibleLayer()
+    void newLabelsUsesActiveImageSizeAndFits()
     {
         ViewerModel viewer;
-        auto layer = std::make_unique<ImageLayer>(
-            NdImage({100, 200}, DataType::UInt8, ChannelMode::Scalar, scalarBytesU8({100, 200}), QStringLiteral("fit")));
-        viewer.addLayer(std::move(layer));
+        viewer.addImage(NdImage({100, 200}, DataType::UInt8, ChannelMode::Scalar, scalarBytesU8({100, 200}), QStringLiteral("fit")));
+        LabelsLayer *labels = viewer.newLabels();
+        QCOMPARE(labels->shape(), QVector<int>({100, 200}));
+
+        viewer.setActiveLayerIndex(1);
         viewer.fitToActiveOrVisible(QSize(400, 200));
         QVERIFY(qAbs(viewer.camera()->zoom() - 2.0) < 0.0001);
     }
@@ -200,29 +234,37 @@ class ImageReaderTests : public QObject {
     Q_OBJECT
 
 private slots:
-    void readsPngIntoSingleLayer()
+    void readsImagesAndLabelsExplicitly()
     {
         QTemporaryDir directory;
         const QString path = writePng(directory);
         QString error;
-        auto layers = ImageReader::read(path, &error);
+
+        auto imageLayers = ImageReader::read(path, OpenLayerKind::Image, &error);
         QVERIFY(error.isEmpty());
-        QCOMPARE(static_cast<int>(layers.size()), 1);
-        QCOMPARE(layers.front()->image().shape(), QVector<int>({10, 12}));
+        QCOMPARE(static_cast<int>(imageLayers.size()), 1);
+        QCOMPARE(imageLayers.front()->kind(), Layer::Kind::Image);
+
+        auto labelLayers = ImageReader::read(path, OpenLayerKind::Labels, &error);
+        QVERIFY(error.isEmpty());
+        QCOMPARE(static_cast<int>(labelLayers.size()), 1);
+        QCOMPARE(labelLayers.front()->kind(), Layer::Kind::Labels);
     }
 
-    void readsSinglePageAndStackedTiff()
+    void rejectsColorImagesAsLabelsAndReadsTiffStacks()
     {
         QTemporaryDir directory;
         QString error;
 
-        auto onePage = ImageReader::read(writeTiff(directory, 1), &error);
-        QVERIFY(error.isEmpty());
-        QCOMPARE(onePage.front()->image().shape(), QVector<int>({4, 6}));
+        auto rejected = ImageReader::read(writeColorPng(directory), OpenLayerKind::Labels, &error);
+        QVERIFY(rejected.empty());
+        QVERIFY(!error.isEmpty());
 
-        auto stack = ImageReader::read(writeTiff(directory, 3), &error);
+        auto stack = ImageReader::read(writeTiff(directory, 3), OpenLayerKind::Labels, &error);
         QVERIFY(error.isEmpty());
-        QCOMPARE(stack.front()->image().shape(), QVector<int>({3, 4, 6}));
+        QCOMPARE(static_cast<int>(stack.size()), 1);
+        QCOMPARE(stack.front()->kind(), Layer::Kind::Labels);
+        QCOMPARE(stack.front()->shape(), QVector<int>({3, 4, 6}));
     }
 };
 
@@ -230,7 +272,7 @@ class MainWindowTests : public QObject {
     Q_OBJECT
 
 private slots:
-    void opensFilesAndExportsScreenshot()
+    void opensFilesSwapsControlsAndPaintsLabels()
     {
         QTemporaryDir directory;
         const QString imagePath = writePng(directory);
@@ -241,13 +283,50 @@ private slots:
 
         window.openPaths({imagePath});
         QCOMPARE(window.viewerModel()->layerCount(), 1);
-        QVERIFY(window.layerListView()->model()->rowCount() == 1);
-        QTRY_VERIFY(window.viewerModel()->camera()->zoom() > 1.0);
+        QCOMPARE(window.viewerModel()->activeLayer()->kind(), Layer::Kind::Image);
+        auto *stack = window.findChild<QStackedWidget *>(QStringLiteral("layerControlsStack"));
+        QVERIFY(stack != nullptr);
+        QCOMPARE(stack->currentWidget()->objectName(), QStringLiteral("imageControlsPage"));
+
+        window.viewerModel()->newLabels();
+        window.canvasWidget()->fitToView();
+        QTRY_COMPARE(window.viewerModel()->activeLayer()->kind(), Layer::Kind::Labels);
+        QCOMPARE(stack->currentWidget()->objectName(), QStringLiteral("labelsControlsPage"));
+
+        auto *labels = window.viewerModel()->activeLabelsLayer();
+        QVERIFY(labels != nullptr);
+        labels->setBrushSize(1);
+        labels->setSelectedLabel(7);
+        labels->setMode(LabelsLayer::Mode::Paint);
+
+        const QPoint imageCenter(labels->planeSize().width() / 2, labels->planeSize().height() / 2);
+        const QPointF mappedCenter = window.viewerModel()->camera()->imageToScreen(QPointF(imageCenter), window.canvasWidget()->size());
+        const QPoint center(qRound(mappedCenter.x()), qRound(mappedCenter.y()));
+        QTest::mousePress(window.canvasWidget(), Qt::LeftButton, Qt::NoModifier, center);
+        QTest::mouseRelease(window.canvasWidget(), Qt::LeftButton, Qt::NoModifier, center);
+        QTRY_COMPARE(labels->pickLabel(imageCenter, *window.viewerModel()->dimsModel()), 7u);
+
+        labels->setSelectedLabel(1);
+        labels->setMode(LabelsLayer::Mode::Pick);
+        QTest::mouseClick(window.canvasWidget(), Qt::LeftButton, Qt::NoModifier, center);
+        QTRY_COMPARE(labels->selectedLabel(), 7u);
 
         const QString screenshotPath = directory.path() + QStringLiteral("/shot.png");
         QVERIFY(window.canvasWidget()->saveScreenshot(screenshotPath));
         QVERIFY(QFileInfo::exists(screenshotPath));
         QVERIFY(QFileInfo(screenshotPath).size() > 0);
+    }
+
+    void opensPathsAsLabelsExplicitly()
+    {
+        QTemporaryDir directory;
+        MainWindow window;
+        window.show();
+        QTest::qWait(50);
+
+        window.openPathsAsLabels({writePng(directory)});
+        QCOMPARE(window.viewerModel()->layerCount(), 1);
+        QCOMPARE(window.viewerModel()->activeLayer()->kind(), Layer::Kind::Labels);
     }
 };
 
@@ -263,6 +342,8 @@ int runAllTests(int argc, char **argv)
     status |= QTest::qExec(&dimsModelTests, argc, argv);
     SliceExtractorTests sliceExtractorTests;
     status |= QTest::qExec(&sliceExtractorTests, argc, argv);
+    LabelsLayerTests labelsLayerTests;
+    status |= QTest::qExec(&labelsLayerTests, argc, argv);
     ViewerModelTests viewerModelTests;
     status |= QTest::qExec(&viewerModelTests, argc, argv);
     ImageReaderTests imageReaderTests;

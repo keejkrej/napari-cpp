@@ -129,6 +129,11 @@ bool NdImage::isColor() const
     return channelMode_ == ChannelMode::RGB || channelMode_ == ChannelMode::RGBA;
 }
 
+bool NdImage::isInteger() const
+{
+    return dataType_ == DataType::UInt8 || dataType_ == DataType::UInt16;
+}
+
 int NdImage::channelCount() const
 {
     switch (channelMode_) {
@@ -239,6 +244,50 @@ QPair<double, double> NdImage::scalarMinMax() const
     return qMakePair(minimum, maximum);
 }
 
+quint32 NdImage::integerValue(const qsizetype scalarIndex) const
+{
+    if (!isScalar() || !isInteger()) {
+        return 0;
+    }
+
+    const char *data = bytes_.constData();
+    switch (dataType_) {
+    case DataType::UInt8:
+        return loadTypedValue<quint8>(data, scalarIndex);
+    case DataType::UInt16:
+        return loadTypedValue<quint16>(data, scalarIndex);
+    case DataType::Float32:
+        return 0;
+    }
+
+    return 0;
+}
+
+bool NdImage::setIntegerValue(const qsizetype scalarIndex, const quint32 value)
+{
+    if (!isScalar() || !isInteger() || scalarIndex < 0 || scalarIndex >= scalarElementCount()) {
+        return false;
+    }
+
+    char *data = bytes_.data();
+    switch (dataType_) {
+    case DataType::UInt8: {
+        const quint8 stored = static_cast<quint8>(std::min<quint32>(value, std::numeric_limits<quint8>::max()));
+        std::memcpy(data + scalarIndex * sizeof(quint8), &stored, sizeof(quint8));
+        return true;
+    }
+    case DataType::UInt16: {
+        const quint16 stored = static_cast<quint16>(std::min<quint32>(value, std::numeric_limits<quint16>::max()));
+        std::memcpy(data + scalarIndex * sizeof(quint16), &stored, sizeof(quint16));
+        return true;
+    }
+    case DataType::Float32:
+        return false;
+    }
+
+    return false;
+}
+
 QRgb NdImage::rgbaValue(qsizetype pixelIndex) const
 {
     if (!isColor()) {
@@ -259,6 +308,17 @@ QRgb NdImage::rgbaValue(qsizetype pixelIndex) const
                  static_cast<int>(std::round(green)),
                  static_cast<int>(std::round(blue)),
                  static_cast<int>(std::round(alpha)));
+}
+
+NdImage NdImage::zeros(QVector<int> shape, const DataType dataType, QString name)
+{
+    const qsizetype scalarElements = product(shape);
+    const int bytesPerElement = (dataType == DataType::UInt8) ? 1 : (dataType == DataType::UInt16 ? 2 : 4);
+    return NdImage(std::move(shape),
+                   dataType,
+                   ChannelMode::Scalar,
+                   QByteArray(scalarElements * bytesPerElement, 0),
+                   std::move(name));
 }
 
 }  // namespace napari_cpp

@@ -12,6 +12,9 @@
 
 #include <tiffio.h>
 
+#include "core/image_layer.h"
+#include "core/labels_layer.h"
+
 namespace napari_cpp {
 
 namespace {
@@ -37,7 +40,7 @@ NdImage readStandardImage(const QString &path)
 {
     QImageReader reader(path);
     reader.setAutoTransform(true);
-    QImage image = reader.read();
+    const QImage image = reader.read();
     if (image.isNull()) {
         throw std::runtime_error(reader.errorString().toStdString());
     }
@@ -84,9 +87,8 @@ DataType dataTypeFromTiff(const uint16_t bitDepth, const uint16_t sampleFormat)
     throw std::runtime_error("Unsupported TIFF sample format");
 }
 
-std::vector<std::unique_ptr<ImageLayer>> readTiff(const QString &path)
+NdImage readTiff(const QString &path)
 {
-    std::vector<std::unique_ptr<ImageLayer>> layers;
     TIFF *tiff = TIFFOpen(path.toUtf8().constData(), "r");
     if (tiff == nullptr) {
         throw std::runtime_error("Unable to open TIFF file");
@@ -109,7 +111,6 @@ std::vector<std::unique_ptr<ImageLayer>> readTiff(const QString &path)
     do {
         ++directoryCount;
     } while (TIFFReadDirectory(tiff) == 1);
-
     TIFFSetDirectory(tiff, 0);
 
     if (samplesPerPixel == 1) {
@@ -154,10 +155,7 @@ std::vector<std::unique_ptr<ImageLayer>> readTiff(const QString &path)
             shape << directoryCount;
         }
         shape << static_cast<int>(height) << static_cast<int>(width);
-        auto layer = std::make_unique<ImageLayer>(
-            NdImage(shape, dataType, ChannelMode::Scalar, bytes, baseNameForPath(path)));
-        layers.push_back(std::move(layer));
-        return layers;
+        return NdImage(shape, dataType, ChannelMode::Scalar, bytes, baseNameForPath(path));
     }
 
     TIFFSetDirectory(tiff, 0);
@@ -178,26 +176,51 @@ std::vector<std::unique_ptr<ImageLayer>> readTiff(const QString &path)
         }
     }
 
-    layers.push_back(std::make_unique<ImageLayer>(NdImage({static_cast<int>(height), static_cast<int>(width)},
-                                                          DataType::UInt8,
-                                                          ChannelMode::RGBA,
-                                                          bytes,
-                                                          baseNameForPath(path))));
-    return layers;
+    return NdImage({static_cast<int>(height), static_cast<int>(width)},
+                   DataType::UInt8,
+                   ChannelMode::RGBA,
+                   bytes,
+                   baseNameForPath(path));
+}
+
+std::unique_ptr<Layer> makeLayer(NdImage image, const OpenLayerKind kind)
+{
+    switch (kind) {
+    case OpenLayerKind::Image:
+        return std::make_unique<ImageLayer>(std::move(image));
+    case OpenLayerKind::Labels:
+        if (image.isColor()) {
+            throw std::runtime_error("Labels layers must be opened from grayscale integer data");
+        }
+        if (!image.isInteger()) {
+            throw std::runtime_error("Labels layers require integer image data");
+        }
+        return std::make_unique<LabelsLayer>(std::move(image));
+    }
+
+    throw std::runtime_error("Unsupported layer kind");
 }
 
 }  // namespace
 
-std::vector<std::unique_ptr<ImageLayer>> ImageReader::read(const QString &path, QString *errorMessage)
+std::vector<std::unique_ptr<Layer>> ImageReader::read(const QString &path,
+                                                      const OpenLayerKind kind,
+                                                      QString *errorMessage)
 {
     try {
+        if (errorMessage != nullptr) {
+            errorMessage->clear();
+        }
+        NdImage image;
         const QString suffix = QFileInfo(path).suffix().toLower();
         if (suffix == QStringLiteral("tif") || suffix == QStringLiteral("tiff")) {
-            return readTiff(path);
+            image = readTiff(path);
+        } else {
+            image = readStandardImage(path);
         }
 
-        std::vector<std::unique_ptr<ImageLayer>> layers;
-        layers.push_back(std::make_unique<ImageLayer>(readStandardImage(path)));
+        std::vector<std::unique_ptr<Layer>> layers;
+        layers.push_back(makeLayer(std::move(image), kind));
         return layers;
     } catch (const std::exception &error) {
         if (errorMessage != nullptr) {

@@ -38,6 +38,7 @@ public:
 
     [[nodiscard]] bool isScalar() const;
     [[nodiscard]] bool isColor() const;
+    [[nodiscard]] bool isInteger() const;
     [[nodiscard]] int channelCount() const;
     [[nodiscard]] int bytesPerElement() const;
     [[nodiscard]] qsizetype scalarElementCount() const;
@@ -48,7 +49,11 @@ public:
     [[nodiscard]] double scalarValue(qsizetype scalarIndex) const;
     [[nodiscard]] double scalarValue(const QVector<int> &indices) const;
     [[nodiscard]] QPair<double, double> scalarMinMax() const;
+    [[nodiscard]] quint32 integerValue(qsizetype scalarIndex) const;
+    bool setIntegerValue(qsizetype scalarIndex, quint32 value);
     [[nodiscard]] QRgb rgbaValue(qsizetype pixelIndex) const;
+
+    static NdImage zeros(QVector<int> shape, DataType dataType, QString name = {});
 
 private:
     QVector<int> shape_;

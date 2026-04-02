@@ -6,6 +6,8 @@ namespace napari_cpp {
 
 class DimsModel;
 class ImageLayer;
+class LabelsLayer;
+class Layer;
 
 struct SliceResult {
     QImage image;
@@ -13,7 +15,7 @@ struct SliceResult {
 
 class SliceExtractor {
 public:
-    static SliceResult extractRgba(const ImageLayer &layer, const DimsModel &dims);
+    static SliceResult extractRgba(const Layer &layer, const DimsModel &dims);
 };
 
 }  // namespace napari_cpp

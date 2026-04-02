@@ -5,13 +5,20 @@
 
 #include <QString>
 
-#include "core/image_layer.h"
-
 namespace napari_cpp {
+
+class Layer;
+
+enum class OpenLayerKind {
+    Image,
+    Labels,
+};
 
 class ImageReader {
 public:
-    static std::vector<std::unique_ptr<ImageLayer>> read(const QString &path, QString *errorMessage = nullptr);
+    static std::vector<std::unique_ptr<Layer>> read(const QString &path,
+                                                    OpenLayerKind kind = OpenLayerKind::Image,
+                                                    QString *errorMessage = nullptr);
 };
 
 }  // namespace napari_cpp

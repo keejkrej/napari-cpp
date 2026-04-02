@@ -1,7 +1,9 @@
 #pragma once
 
 #include <QObject>
+#include <QSize>
 #include <QString>
+#include <QVector>
 
 namespace napari_cpp {
 
@@ -11,6 +13,7 @@ class Layer : public QObject {
 public:
     enum class Kind {
         Image,
+        Labels,
     };
     Q_ENUM(Kind)
 
@@ -26,6 +29,9 @@ public:
     void setOpacity(double opacity);
 
     [[nodiscard]] virtual Kind kind() const = 0;
+    [[nodiscard]] virtual QVector<int> shape() const = 0;
+    [[nodiscard]] virtual QSize planeSize() const = 0;
+    [[nodiscard]] QString kindName() const;
 
 signals:
     void changed();

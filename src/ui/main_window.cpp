@@ -5,15 +5,16 @@
 #include <QListView>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QSplitter>
 #include <QStatusBar>
 #include <QToolBar>
 #include <QVBoxLayout>
 #include <QWidget>
 
 #include "core/viewer_model.h"
-#include "io/image_reader.h"
 #include "render/canvas_widget.h"
 #include "ui/dims_widget.h"
+#include "ui/layer_controls_widget.h"
 #include "ui/layer_list_model.h"
 
 namespace napari_cpp {
@@ -23,6 +24,7 @@ MainWindow::MainWindow(QWidget *parent)
       viewer_(new ViewerModel(this)),
       canvas_(new CanvasWidget(viewer_, this)),
       dimsWidget_(new DimsWidget(viewer_->dimsModel(), this)),
+      layerControls_(new LayerControlsWidget(viewer_, this)),
       layerModel_(new LayerListModel(viewer_, this)),
       layerView_(new QListView(this))
 {
@@ -39,8 +41,14 @@ MainWindow::MainWindow(QWidget *parent)
 
     layerView_->setModel(layerModel_);
     layerView_->setSelectionMode(QAbstractItemView::SingleSelection);
+
     auto *layerDock = new QDockWidget(QStringLiteral("Layers"), this);
-    layerDock->setWidget(layerView_);
+    auto *dockSplitter = new QSplitter(Qt::Vertical, layerDock);
+    dockSplitter->addWidget(layerView_);
+    dockSplitter->addWidget(layerControls_);
+    dockSplitter->setStretchFactor(0, 3);
+    dockSplitter->setStretchFactor(1, 4);
+    layerDock->setWidget(dockSplitter);
     addDockWidget(Qt::RightDockWidgetArea, layerDock);
 
     createActions();
@@ -52,7 +60,7 @@ MainWindow::MainWindow(QWidget *parent)
     connect(viewer_, &ViewerModel::statusTextChanged, this, [this](const QString &text) {
         statusBar()->showMessage(text);
     });
-    connect(viewer_, &ViewerModel::activeLayerChanged, this, [this](ImageLayer *) { syncSelectionToViewer(); });
+    connect(viewer_, &ViewerModel::activeLayerChanged, this, [this](Layer *) { syncSelectionToViewer(); });
     connect(viewer_, &ViewerModel::layersChanged, this, [this]() { syncSelectionToViewer(); });
     connect(layerView_->selectionModel(), &QItemSelectionModel::currentChanged, this, [this](const QModelIndex &current) {
         viewer_->setActiveLayerIndex(current.isValid() ? current.row() : -1);
@@ -76,10 +84,20 @@ QListView *MainWindow::layerListView() const
 
 void MainWindow::openPaths(const QStringList &paths)
 {
+    openPathsImpl(paths, OpenLayerKind::Image);
+}
+
+void MainWindow::openPathsAsLabels(const QStringList &paths)
+{
+    openPathsImpl(paths, OpenLayerKind::Labels);
+}
+
+void MainWindow::openPathsImpl(const QStringList &paths, const OpenLayerKind kind)
+{
     bool openedAnything = false;
     for (const QString &path : paths) {
         QString error;
-        std::vector<std::unique_ptr<ImageLayer>> layers = ImageReader::read(path, &error);
+        std::vector<std::unique_ptr<Layer>> layers = ImageReader::read(path, kind, &error);
         if (layers.empty()) {
             if (!error.isEmpty()) {
                 QMessageBox::warning(this,
@@ -100,9 +118,9 @@ void MainWindow::openPaths(const QStringList &paths)
 
 void MainWindow::createActions()
 {
-    auto *openAction = new QAction(QStringLiteral("Open"), this);
-    openAction->setShortcut(QKeySequence::Open);
-    connect(openAction, &QAction::triggered, this, [this]() {
+    openAction_ = new QAction(QStringLiteral("Open"), this);
+    openAction_->setShortcut(QKeySequence::Open);
+    connect(openAction_, &QAction::triggered, this, [this]() {
         const QStringList paths = QFileDialog::getOpenFileNames(
             this,
             QStringLiteral("Open images"),
@@ -112,10 +130,27 @@ void MainWindow::createActions()
             openPaths(paths);
         }
     });
-    addAction(openAction);
 
-    auto *exportAction = new QAction(QStringLiteral("Export Screenshot"), this);
-    connect(exportAction, &QAction::triggered, this, [this]() {
+    openLabelsAction_ = new QAction(QStringLiteral("Open as Labels"), this);
+    connect(openLabelsAction_, &QAction::triggered, this, [this]() {
+        const QStringList paths = QFileDialog::getOpenFileNames(
+            this,
+            QStringLiteral("Open labels"),
+            QString(),
+            QStringLiteral("Images (*.png *.bmp *.tif *.tiff);;All Files (*)"));
+        if (!paths.isEmpty()) {
+            openPathsAsLabels(paths);
+        }
+    });
+
+    newLabelsAction_ = new QAction(QStringLiteral("New Labels"), this);
+    connect(newLabelsAction_, &QAction::triggered, this, [this]() {
+        viewer_->newLabels();
+        canvas_->scheduleAutoFit();
+    });
+
+    exportAction_ = new QAction(QStringLiteral("Export Screenshot"), this);
+    connect(exportAction_, &QAction::triggered, this, [this]() {
         const QString path = QFileDialog::getSaveFileName(
             this,
             QStringLiteral("Save screenshot"),
@@ -125,57 +160,56 @@ void MainWindow::createActions()
             canvas_->saveScreenshot(path);
         }
     });
-    addAction(exportAction);
 
-    auto *quitAction = new QAction(QStringLiteral("Quit"), this);
-    quitAction->setShortcut(QKeySequence::Quit);
-    connect(quitAction, &QAction::triggered, this, &QWidget::close);
-    addAction(quitAction);
+    quitAction_ = new QAction(QStringLiteral("Quit"), this);
+    quitAction_->setShortcut(QKeySequence::Quit);
+    connect(quitAction_, &QAction::triggered, this, &QWidget::close);
 
-    auto *fitAction = new QAction(QStringLiteral("Fit"), this);
-    connect(fitAction, &QAction::triggered, canvas_, &CanvasWidget::fitToView);
-    addAction(fitAction);
+    fitAction_ = new QAction(QStringLiteral("Fit"), this);
+    connect(fitAction_, &QAction::triggered, canvas_, &CanvasWidget::fitToView);
 
-    auto *zoomInAction = new QAction(QStringLiteral("Zoom In"), this);
-    connect(zoomInAction, &QAction::triggered, this, [this]() { canvas_->zoomByFactor(1.2); });
-    addAction(zoomInAction);
+    zoomInAction_ = new QAction(QStringLiteral("Zoom In"), this);
+    connect(zoomInAction_, &QAction::triggered, this, [this]() { canvas_->zoomByFactor(1.2); });
 
-    auto *zoomOutAction = new QAction(QStringLiteral("Zoom Out"), this);
-    connect(zoomOutAction, &QAction::triggered, this, [this]() { canvas_->zoomByFactor(1.0 / 1.2); });
-    addAction(zoomOutAction);
+    zoomOutAction_ = new QAction(QStringLiteral("Zoom Out"), this);
+    connect(zoomOutAction_, &QAction::triggered, this, [this]() { canvas_->zoomByFactor(1.0 / 1.2); });
 
-    auto *removeAction = new QAction(QStringLiteral("Remove Layer"), this);
-    connect(removeAction, &QAction::triggered, viewer_, &ViewerModel::removeActiveLayer);
-    addAction(removeAction);
+    removeAction_ = new QAction(QStringLiteral("Remove Layer"), this);
+    connect(removeAction_, &QAction::triggered, viewer_, &ViewerModel::removeActiveLayer);
 }
 
 void MainWindow::createMenus()
 {
     QMenu *fileMenu = menuBar()->addMenu(QStringLiteral("&File"));
-    fileMenu->addAction(actions().at(0));
-    fileMenu->addAction(actions().at(1));
+    fileMenu->addAction(openAction_);
+    fileMenu->addAction(openLabelsAction_);
+    fileMenu->addAction(newLabelsAction_);
+    fileMenu->addAction(exportAction_);
     fileMenu->addSeparator();
-    fileMenu->addAction(actions().at(2));
+    fileMenu->addAction(quitAction_);
 
     QMenu *viewMenu = menuBar()->addMenu(QStringLiteral("&View"));
-    viewMenu->addAction(actions().at(3));
-    viewMenu->addAction(actions().at(4));
-    viewMenu->addAction(actions().at(5));
+    viewMenu->addAction(fitAction_);
+    viewMenu->addAction(zoomInAction_);
+    viewMenu->addAction(zoomOutAction_);
 
     QMenu *layerMenu = menuBar()->addMenu(QStringLiteral("&Layer"));
-    layerMenu->addAction(actions().at(6));
+    layerMenu->addAction(newLabelsAction_);
+    layerMenu->addAction(removeAction_);
 }
 
 void MainWindow::createToolbar()
 {
     QToolBar *toolbar = addToolBar(QStringLiteral("Main"));
-    toolbar->addAction(actions().at(0));
+    toolbar->addAction(openAction_);
+    toolbar->addAction(openLabelsAction_);
+    toolbar->addAction(newLabelsAction_);
     toolbar->addSeparator();
-    toolbar->addAction(actions().at(3));
-    toolbar->addAction(actions().at(4));
-    toolbar->addAction(actions().at(5));
+    toolbar->addAction(fitAction_);
+    toolbar->addAction(zoomInAction_);
+    toolbar->addAction(zoomOutAction_);
     toolbar->addSeparator();
-    toolbar->addAction(actions().at(6));
+    toolbar->addAction(removeAction_);
 }
 
 void MainWindow::syncSelectionToViewer()

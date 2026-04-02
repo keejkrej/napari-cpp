@@ -21,6 +21,16 @@ Layer::Kind ImageLayer::kind() const
     return Kind::Image;
 }
 
+QVector<int> ImageLayer::shape() const
+{
+    return image_.shape();
+}
+
+QSize ImageLayer::planeSize() const
+{
+    return image_.planeSize();
+}
+
 const NdImage &ImageLayer::image() const
 {
     return image_;

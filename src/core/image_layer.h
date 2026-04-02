@@ -15,6 +15,8 @@ public:
     explicit ImageLayer(NdImage image, QString name = {}, QObject *parent = nullptr);
 
     [[nodiscard]] Kind kind() const override;
+    [[nodiscard]] QVector<int> shape() const override;
+    [[nodiscard]] QSize planeSize() const override;
     [[nodiscard]] const NdImage &image() const;
     [[nodiscard]] NdImage &image();
     [[nodiscard]] QPair<double, double> contrastLimits() const;

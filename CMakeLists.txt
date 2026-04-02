@@ -20,6 +20,7 @@ set(NAPARI_CPP_SOURCES
     src/core/camera2d.cpp
     src/core/dims_model.cpp
     src/core/image_layer.cpp
+    src/core/labels_layer.cpp
     src/core/layer.cpp
     src/core/nd_image.cpp
     src/core/slice_extractor.cpp
@@ -27,6 +28,7 @@ set(NAPARI_CPP_SOURCES
     src/io/image_reader.cpp
     src/render/canvas_widget.cpp
     src/ui/dims_widget.cpp
+    src/ui/layer_controls_widget.cpp
     src/ui/layer_list_model.cpp
     src/ui/main_window.cpp
 )
@@ -35,6 +37,7 @@ set(NAPARI_CPP_HEADERS
     src/core/camera2d.h
     src/core/dims_model.h
     src/core/image_layer.h
+    src/core/labels_layer.h
     src/core/layer.h
     src/core/nd_image.h
     src/core/slice_extractor.h
@@ -42,6 +45,7 @@ set(NAPARI_CPP_HEADERS
     src/io/image_reader.h
     src/render/canvas_widget.h
     src/ui/dims_widget.h
+    src/ui/layer_controls_widget.h
     src/ui/layer_list_model.h
     src/ui/main_window.h
 )

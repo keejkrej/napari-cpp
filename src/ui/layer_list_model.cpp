@@ -1,6 +1,6 @@
 #include "ui/layer_list_model.h"
 
-#include "core/image_layer.h"
+#include "core/layer.h"
 #include "core/viewer_model.h"
 
 namespace napari_cpp {
@@ -11,6 +11,11 @@ LayerListModel::LayerListModel(ViewerModel *viewer, QObject *parent)
     connect(viewer_, &ViewerModel::layersChanged, this, [this]() {
         beginResetModel();
         endResetModel();
+    });
+    connect(viewer_, &ViewerModel::layerDataChanged, this, [this](const int row) {
+        if (row >= 0) {
+            emit dataChanged(index(row), index(row));
+        }
     });
 }
 
@@ -28,20 +33,20 @@ QVariant LayerListModel::data(const QModelIndex &index, const int role) const
         return {};
     }
 
-    ImageLayer *layer = viewer_->layerAt(index.row());
+    Layer *layer = viewer_->layerAt(index.row());
     if (layer == nullptr) {
         return {};
     }
 
     if (role == Qt::DisplayRole) {
-        return layer->name();
+        return QStringLiteral("%1 (%2)").arg(layer->name(), layer->kindName());
     }
     if (role == Qt::CheckStateRole) {
         return layer->visible() ? Qt::Checked : Qt::Unchecked;
     }
     if (role == Qt::ToolTipRole) {
-        const QSize size = layer->image().planeSize();
-        return QStringLiteral("%1 x %2").arg(size.width()).arg(size.height());
+        const QSize size = layer->planeSize();
+        return QStringLiteral("%1\n%2 x %3").arg(layer->kindName()).arg(size.width()).arg(size.height());
     }
 
     return {};
@@ -53,7 +58,7 @@ bool LayerListModel::setData(const QModelIndex &index, const QVariant &value, co
         return false;
     }
 
-    ImageLayer *layer = viewer_->layerAt(index.row());
+    Layer *layer = viewer_->layerAt(index.row());
     if (layer == nullptr) {
         return false;
     }
